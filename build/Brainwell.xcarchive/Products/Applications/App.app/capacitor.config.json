@@ -1,0 +1,8 @@
+{
+	"appId": "com.brainwell.app",
+	"appName": "Brainwell",
+	"webDir": "dist",
+	"packageClassList": [
+		"BluetoothLe"
+	]
+}
