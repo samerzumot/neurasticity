@@ -51,6 +51,7 @@ class SignalFeatures(BaseModel):
     calibration_progress: int = Field(default=0, alias="calibrationProgress")
     calibration_required: int = Field(default=24, alias="calibrationRequired")
     raw_metrics: dict[str, float] = Field(default_factory=dict, alias="rawMetrics")
+    smoothed_metrics: dict[str, float] = Field(default_factory=dict, alias="smoothedMetrics")
     baseline_relative_metrics: dict[str, float] = Field(default_factory=dict, alias="baselineRelativeMetrics")
 
 

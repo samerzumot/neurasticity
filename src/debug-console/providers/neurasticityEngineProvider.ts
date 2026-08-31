@@ -52,6 +52,9 @@ export class NeurasticityEngineProvider implements EegProvider {
     await this.disconnect("Preparing a fresh connection");
     this.events.onState("connecting", `Connecting through Neurasticity's ${this.kind} path`);
     this.sequenceId = 0;
+    // The console always supplies an explicit override. Its UI begins at
+    // zero, which disables the backend presentation smoother.
+    eegEngine.setConsoleMetricSmoothing(0);
     this.unsubscribe = eegEngine.subscribe((point) => this.publish(point));
     eegEngine.start();
 
@@ -88,6 +91,7 @@ export class NeurasticityEngineProvider implements EegProvider {
     this.unsubscribe = null;
     eegEngine.stop();
     eegEngine.disconnectHardware();
+    eegEngine.setConsoleMetricSmoothing(null);
     this.deviceInfo = null;
     this.events.onState("disconnected", reason);
   }
@@ -143,7 +147,9 @@ function toFeatures(point: EEGDataPoint): SignalFeatures {
     calibrationStatus: point.calibrationStatus,
     calibrationProgress: point.calibrationProgress,
     calibrationRequired: point.calibrationRequired,
-    rawMetrics: point.rawMetrics,
+    // The console intentionally opts into the independently applied
+    // output-smoothed presentation, while the app reads canonical metrics.
+    rawMetrics: point.smoothedMetrics,
     baselineRelativeMetrics: point.baselineRelativeMetrics,
   };
 }

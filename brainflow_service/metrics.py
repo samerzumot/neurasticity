@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from .affective_state import AffectiveState, FitQualityHint, compute_affective_state
+from .affective_state import AffectiveState, FitQualityHint, classify_affective_state, compute_affective_state
 
 DEFAULT_SMOOTHING_ALPHA = 0.05
 
@@ -44,11 +44,18 @@ class MetricSnapshot:
     affective_state: AffectiveState | None
     interhemispheric_coherence: float | None
     protocol_feedback: ProtocolFeedback
-    calibration_status: str = "off"
-    calibration_progress: int = 0
-    calibration_required: int = 24
-    raw_metrics: dict[str, float] | None = None
-    baseline_relative_metrics: dict[str, float] | None = None
+
+
+@dataclass(frozen=True)
+class MetricPresentationSnapshot:
+    """Consumer-facing views derived from one raw MetricSnapshot."""
+
+    smoothed_band_powers: dict[str, float]
+    smoothed_metrics: dict[str, float]
+    baseline_relative_metrics: dict[str, float]
+    calibration_status: str
+    calibration_progress: int
+    calibration_required: int
 
 
 class MetricCalibration:
@@ -72,9 +79,10 @@ class MetricCalibration:
     def reset(self) -> None:
         self.status, self._requested, self._samples, self._baselines = "off", set(), {}, {}
 
-    def apply(self, values: dict[str, float]) -> dict[str, float]:
+    def observe(self, values: dict[str, float]) -> None:
+        """Collect raw calculated values for the baseline distribution."""
         if self.status == "off":
-            return values
+            return
         keys = set(values) if self._requested is None else self._requested & set(values)
         for key in keys:
             samples = self._samples.setdefault(key, [])
@@ -88,10 +96,13 @@ class MetricCalibration:
             self.status = "collecting"
         elif active:
             self.status = "active"
+
+    def relative_values(self, values: dict[str, float]) -> dict[str, float]:
+        """Map any presentation view onto the already-observed baseline."""
         return {
             key: calibration_percentile(value, *self._baselines[key])
-            if key in self._baselines else value
             for key, value in values.items()
+            if key in self._baselines
         }
 
     @property
@@ -170,19 +181,62 @@ class BrainFlowScoreSmoother:
         )
 
 
-class MetricCalculator:
-    """Calculates every product metric for one live EEG connection."""
+class MetricOutputSmoother:
+    """EMA history for finished hand-derived metrics, scoped to one session."""
+
     def __init__(self, smoothing_alpha: float = DEFAULT_SMOOTHING_ALPHA) -> None:
-        self._bands = BandPowerSmoother(smoothing_alpha)
-        self._brainflow = BrainFlowScoreSmoother(smoothing_alpha)
-        self._calibration = MetricCalibration()
-        self._coherence: float | None = None
         self._alpha = smoothing_alpha
+        self._values: dict[str, float] = {}
 
     def reset(self) -> None:
-        self._bands.reset()
-        self._brainflow.reset()
-        self._coherence = None
+        self._values.clear()
+
+    def push(self, values: dict[str, float]) -> dict[str, float]:
+        smoothed: dict[str, float] = {}
+        for name, value in values.items():
+            if math.isfinite(value):
+                self._values[name] = smooth_ema(self._values.get(name), value, self._alpha)
+                smoothed[name] = self._values[name]
+        return smoothed
+
+
+class MetricCalculator:
+    """Pure, stateless calculation of every metric from one EEG window."""
+
+    def compute(self, metric_input: MetricInput) -> MetricSnapshot:
+        absolute = _finite_bands(metric_input.absolute_bands)
+        relative, ratios = compute_relative_band_powers(absolute), compute_band_ratios(absolute)
+        scores = BrainFlowScores(
+            normalize_brainflow_score(metric_input.raw_mindfulness),
+            normalize_brainflow_score(metric_input.raw_restfulness),
+        ) if metric_input.reliable else BrainFlowScores(None, None)
+        affective = compute_affective_state(absolute, metric_input.fit) if metric_input.reliable else None
+        coherence = metric_input.interhemispheric_coherence if metric_input.interhemispheric_coherence is not None and math.isfinite(metric_input.interhemispheric_coherence) else None
+        feedback = compute_protocol_feedback(absolute, ratios, metric_input.protocol, metric_input.threshold) if metric_input.reliable else ProtocolFeedback(None, None, None, None)
+        return MetricSnapshot(absolute, relative, ratios, scores, affective, coherence, feedback)
+
+
+class MetricPresentation:
+    """Optional presentation transforms, independent of metric computation."""
+
+    def __init__(
+        self,
+        smoothing_alpha: float | None = None,
+        metric_names: set[str] | None = None,
+    ) -> None:
+        """Create an optional presentation smoother.
+
+        ``None`` selects every metric (the debug-console profile); a named
+        set selects only those finished outputs (the app uses mindfulness).
+        """
+        self._bands = BandPowerSmoother(smoothing_alpha) if smoothing_alpha is not None else None
+        self._metrics = MetricOutputSmoother(smoothing_alpha) if smoothing_alpha is not None else None
+        self._metric_names = metric_names
+        self._calibration = MetricCalibration()
+
+    def reset(self) -> None:
+        if self._bands: self._bands.reset()
+        if self._metrics: self._metrics.reset()
         self._calibration.reset()
 
     def start_calibration(self, metric_names: set[str] | None = None) -> None:
@@ -191,36 +245,27 @@ class MetricCalculator:
     def reset_calibration(self) -> None:
         self._calibration.reset()
 
-    def push(self, metric_input: MetricInput) -> MetricSnapshot:
-        absolute = self._bands.push(metric_input.absolute_bands)
-        relative, ratios = compute_relative_band_powers(absolute), compute_band_ratios(absolute)
-        coherence = self._push_coherence(metric_input.interhemispheric_coherence)
-        # Do not display or feed an artifact-contaminated prediction into the
-        # EMA history; raw model outputs remain available separately for
-        # diagnostics in the transport payload.
-        brainflow_scores = self._brainflow.push(metric_input.raw_mindfulness, metric_input.raw_restfulness) if metric_input.reliable else BrainFlowScores(None, None)
-        affective = compute_affective_state(absolute, metric_input.fit) if metric_input.reliable else None
-        feedback = compute_protocol_feedback(absolute, ratios, metric_input.protocol, metric_input.threshold) if metric_input.reliable else ProtocolFeedback(None, None, None, None)
-        raw_display = _display_values(brainflow_scores, affective, coherence, ratios) if metric_input.reliable else {}
-        display = self._calibration.apply(raw_display) if metric_input.reliable else {}
-        baseline_relative = {key: display[key] for key in self._calibration.active_keys if key in display}
-        if self._calibration.status == "active":
-            brainflow_scores = BrainFlowScores(
-                display.get("mindfulness", brainflow_scores.mindfulness_score),
-                display.get("restfulness", brainflow_scores.restfulness_score),
-            )
-            ratios = {key: display.get(f"ratio:{key}", value) for key, value in ratios.items()}
-            coherence = display.get("ihc", coherence)
-            if affective:
-                affective = AffectiveState(display.get("valence", affective.valence), display.get("arousal", affective.arousal), affective.label, display.get("confidence", affective.confidence))
-        return MetricSnapshot(absolute, relative, ratios, brainflow_scores, affective, coherence, feedback, self._calibration.status, self._calibration.progress, self._calibration.required, raw_display, baseline_relative)
-
-    def _push_coherence(self, value: float | None) -> float | None:
-        if value is None or not math.isfinite(value):
-            return None
-        self._coherence = smooth_ema(self._coherence, value, self._alpha)
-        return self._coherence
-
+    def present(self, snapshot: MetricSnapshot) -> MetricPresentationSnapshot:
+        raw = _display_values(snapshot.brainflow_scores, snapshot.affective_state, snapshot.interhemispheric_coherence, snapshot.ratios)
+        self._calibration.observe(raw)
+        smoothed = dict(raw)
+        if self._metrics:
+            selected = raw if self._metric_names is None else {
+                name: value for name, value in raw.items() if name in self._metric_names
+            }
+            smoothed.update(self._metrics.push(selected))
+        return MetricPresentationSnapshot(
+            smoothed_band_powers=(
+                self._bands.push(snapshot.absolute_bands)
+                if self._bands and self._metric_names is None
+                else snapshot.absolute_bands
+            ),
+            smoothed_metrics=smoothed,
+            baseline_relative_metrics=self._calibration.relative_values(smoothed),
+            calibration_status=self._calibration.status,
+            calibration_progress=self._calibration.progress,
+            calibration_required=self._calibration.required,
+        )
 
 def _display_values(scores: BrainFlowScores, affective: AffectiveState | None, coherence: float | None, ratios: dict[str, float]) -> dict[str, float]:
     values = {f"ratio:{key}": value for key, value in ratios.items()}
@@ -232,6 +277,17 @@ def _display_values(scores: BrainFlowScores, affective: AffectiveState | None, c
     return values
 
 
+def _affective_from_smoothed_outputs(values: dict[str, float]) -> AffectiveState | None:
+    valence, arousal, confidence = (values.get(name) for name in ("valence", "arousal", "confidence"))
+    if valence is None or arousal is None or confidence is None:
+        return None
+    return AffectiveState(valence, arousal, classify_affective_state(valence, arousal), confidence)
+
+
+def _finite_bands(bands: dict[str, float]) -> dict[str, float]:
+    return {name: max(0.0, value) for name, value in bands.items() if math.isfinite(value)}
+
+
 def compute_relative_band_powers(bands: dict[str, float]) -> dict[str, float]:
     total = sum(max(0.0, value) for value in bands.values() if math.isfinite(value))
     return {name: (max(0.0, value) / total if total else 0.0) for name, value in bands.items()}
@@ -240,7 +296,9 @@ def compute_relative_band_powers(bands: dict[str, float]) -> dict[str, float]:
 def compute_band_ratios(bands: dict[str, float]) -> dict[str, float]:
     theta, alpha, smr, beta, gamma = (bands.get(name, 0.0) for name in ("theta", "alpha", "smr", "beta", "gamma"))
     return {
-        "thetaBeta": safe_ratio(theta, beta), "betaTheta": safe_ratio(beta, theta),
+        # Preserve the legacy theta/beta floor so a near-zero beta estimate
+        # cannot make the training metric spike disproportionately.
+        "thetaBeta": safe_ratio(theta, max(0.1, beta)), "betaTheta": safe_ratio(beta, theta),
         "alphaTheta": safe_ratio(alpha, theta), "thetaAlpha": safe_ratio(theta, alpha),
         "smrTheta": safe_ratio(smr, theta), "thetaAlphaBeta": safe_ratio(theta, alpha + beta),
         "alphaBeta": safe_ratio(alpha, beta), "betaAlpha": safe_ratio(beta, alpha),
@@ -264,7 +322,8 @@ def normalize_brainflow_score(value: float | None) -> float | None:
 
 
 def smooth_ema(current: float | None, target: float, weight: float) -> float:
-    return target if current is None else current * (1 - weight) + target * weight
+    # A zero override is the explicit opt-out used by the Debug Console.
+    return target if current is None or weight <= 0 else current * (1 - weight) + target * weight
 
 
 def safe_ratio(numerator: float, denominator: float) -> float:

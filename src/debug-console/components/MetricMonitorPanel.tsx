@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ChevronDown, Gauge, LineChart } from "lucide-react";
 import { LiveEegPlot } from "./LiveEegPlot";
+import { displaySmoothingAlpha, smoothDisplayValues } from "../signalProcessing/displaySmoothing";
 import type { AffectiveStateSample } from "../metrics/affectiveStateMetric";
 import type { AffectiveCalibrationState } from "../metrics/affectiveStateMetric";
 
@@ -15,6 +16,7 @@ export type MetricKey = (typeof metricOptions)[number][0];
 
 export function MetricMonitorPanel({ sample, coherence, history, baselineHistory, selectedMetric, onSelectMetric, calibration, rawMetrics, baselineMetrics }: { sample: AffectiveStateSample | null; coherence: number | null | undefined; history: Record<string, number[]>; baselineHistory: Record<string, number[]>; selectedMetric: MetricKey; onSelectMetric: (value: MetricKey) => void; calibration: AffectiveCalibrationState; rawMetrics: Record<string, number>; baselineMetrics: Record<string, number> }) {
   const [modes, setModes] = useState<Partial<Record<MetricKey, "raw" | "baseline">>>({});
+  const [alphas, setAlphas] = useState<Partial<Record<MetricKey, string>>>({});
   const values: Record<MetricKey, number | null> = {
     mindfulness: sample?.brainflowMindfulnessScore ?? null, restfulness: sample?.brainflowRestfulnessScore ?? null,
     valence: sample?.valence ?? null, arousal: sample?.arousal ?? null, confidence: sample?.confidence ?? null, ihc: coherence ?? null,
@@ -25,8 +27,8 @@ export function MetricMonitorPanel({ sample, coherence, history, baselineHistory
   return <section className="panel metric-monitor-card">
     <div className="panel-header"><div className="panel-title"><div className="icon-tile"><Gauge aria-hidden="true" /></div><div><h2>Derived Metrics</h2><p>Use each card’s Absolute/Relative control to inspect its raw or baseline-relative value.</p></div></div></div>
     <div className="metric-monitor-body">
-      <div className="derived-metric-grid">{metricOptions.filter(([key]) => !affectiveMetricKeys.has(key)).map(([key, label]) => { const mode = modeFor(key); const source = mode === "raw" ? rawMetrics : baselineMetrics; const value = metricValuesForMode(source, mode === "raw" ? values : undefined)[key]; return <div className="derived-metric" key={key}><span>{label}</span><button type="button" className="metric-value-mode" onClick={() => toggle(key)}>{mode === "raw" ? "Absolute" : "Relative"}</button><strong>{formatMetric(value)}</strong></div>; })}</div>
-      <div className="metric-scope"><div className="scope-heading"><div><LineChart aria-hidden="true" /><div><h3>Metric Live Plot</h3><p>One derived metric at a time.</p></div></div><label className="metric-selector"><span>Metric</span><div className="select-wrap"><LineChart aria-hidden="true" /><select value={selectedMetric} onChange={(event) => onSelectMetric(event.target.value as MetricKey)}>{metricOptions.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select><ChevronDown aria-hidden="true" /></div></label></div><LiveEegPlot channelNames={[selectedMetric]} history={modeFor(selectedMetric) === "raw" ? history : baselineHistory} /></div>
+      <div className="derived-metric-grid">{metricOptions.filter(([key]) => !affectiveMetricKeys.has(key)).map(([key, label]) => { const mode = modeFor(key); const source = mode === "raw" ? rawMetrics : baselineMetrics; const value = metricValuesForMode(source, mode === "raw" ? values : undefined)[key]; const alpha = displaySmoothingAlpha(alphas[key] ?? "0"); const valueHistory = (mode === "raw" ? history : baselineHistory)[key] ?? []; const smoothedValue = smoothDisplayValues(valueHistory, alpha).at(-1); return <div className="derived-metric" key={key}><span>{label}</span><button type="button" className="metric-value-mode" onClick={() => toggle(key)}>{mode === "raw" ? "Absolute" : "Relative"}</button><label className="metric-alpha-input">α = <input aria-label={`${label} smoothing alpha`} type="number" min="0" max="1" step="0.01" inputMode="decimal" value={alphas[key] ?? "0"} onChange={(event) => setAlphas((current) => ({ ...current, [key]: event.target.value }))} /></label><strong>{formatMetric(alpha > 0 && smoothedValue !== undefined ? smoothedValue : value)}</strong></div>; })}</div>
+      <div className="metric-scope"><div className="scope-heading"><div><LineChart aria-hidden="true" /><div><h3>Metric Live Plot</h3><p>One derived metric at a time.</p></div></div><label className="metric-selector"><span>Metric</span><div className="select-wrap"><LineChart aria-hidden="true" /><select value={selectedMetric} onChange={(event) => onSelectMetric(event.target.value as MetricKey)}>{metricOptions.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select><ChevronDown aria-hidden="true" /></div></label></div><LiveEegPlot channelNames={[selectedMetric]} history={modeFor(selectedMetric) === "raw" ? history : baselineHistory} smoothingAlpha={displaySmoothingAlpha(alphas[selectedMetric] ?? "0")} /></div>
     </div>
   </section>;
 }

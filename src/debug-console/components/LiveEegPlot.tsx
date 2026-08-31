@@ -1,8 +1,11 @@
 import { useEffect, useRef } from "react";
+import { smoothDisplayValues } from "../signalProcessing/displaySmoothing";
 
 interface LiveEegPlotProps {
   channelNames: string[];
   history: Record<string, number[]>;
+  smoothingAlpha?: number;
+  smoothingAlphas?: Record<string, number>;
 }
 
 const colors = [
@@ -16,7 +19,7 @@ const colors = [
   "#e0e7ff",
 ];
 
-export function LiveEegPlot({ channelNames, history }: LiveEegPlotProps) {
+export function LiveEegPlot({ channelNames, history, smoothingAlpha = 0, smoothingAlphas }: LiveEegPlotProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -55,12 +58,15 @@ export function LiveEegPlot({ channelNames, history }: LiveEegPlotProps) {
     }
 
     channelNames.forEach((name, channelIndex) => {
-      const values = history[name] ?? [];
+      const rawValues = history[name] ?? [];
+      const values = smoothDisplayValues(rawValues, smoothingAlphas?.[name] ?? smoothingAlpha);
       if (values.length < 2) return;
 
-      const finite = values.filter(Number.isFinite);
-      const mean =
-        finite.reduce((total, value) => total + value, 0) / Math.max(1, finite.length);
+      // Keep the original signal's scale while drawing its smoothed version.
+      // Otherwise every alpha setting is stretched to fill the lane and can
+      // misleadingly appear equally noisy.
+      const finite = rawValues.filter(Number.isFinite);
+      const mean = finite.reduce((total, value) => total + value, 0) / Math.max(1, finite.length);
       const centered = finite.map((value) => value - mean);
       const maxAbs = Math.max(1, ...centered.map((value) => Math.abs(value)));
       const laneHeight = height / Math.max(1, channelNames.length);
@@ -83,7 +89,7 @@ export function LiveEegPlot({ channelNames, history }: LiveEegPlotProps) {
 
       context.stroke();
     });
-  }, [channelNames, history]);
+  }, [channelNames, history, smoothingAlpha, smoothingAlphas]);
 
   return <div className="live-plot-frame"><canvas
       ref={canvasRef}

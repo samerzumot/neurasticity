@@ -50,6 +50,7 @@ export interface BrainFlowFeatures {
   calibrationProgress?: number;
   calibrationRequired?: number;
   rawMetrics?: Record<string, number>;
+  smoothedMetrics?: Record<string, number>;
   baselineRelativeMetrics?: Record<string, number>;
 }
 
@@ -163,10 +164,11 @@ class BrainFlowService {
    * Start a stateful analysis session for Bluetooth-connected Muse.
    * Returns a fitSessionId used for all subsequent calls.
    */
-  public async startFitSession(): Promise<string> {
+  public async startFitSession(smoothMetrics = false, smoothingAlpha?: number): Promise<string> {
     const res = await fetch(`${this.baseUrl}/headset-fit/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ smoothMetrics, smoothingAlpha }),
     });
 
     if (!res.ok) {
@@ -281,7 +283,7 @@ class BrainFlowService {
   /**
    * Start a native BrainFlow board session (e.g. Muse Athena or Synthetic Board)
    */
-  public async startSession(deviceId: string, macAddress?: string, serialNumber?: string, protocol = 'theta-beta-ratio', threshold = 1.85): Promise<{ sessionId: string; deviceInfo: any }> {
+  public async startSession(deviceId: string, macAddress?: string, serialNumber?: string, protocol = 'theta-beta-ratio', threshold = 1.85, smoothMetrics = false, smoothingAlpha?: number): Promise<{ sessionId: string; deviceInfo: any }> {
     const res = await fetch(`${this.baseUrl}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -289,7 +291,7 @@ class BrainFlowService {
         deviceId,
         macAddress: macAddress || null,
         serialNumber: serialNumber || null,
-        protocol, threshold,
+        protocol, threshold, smoothMetrics, smoothingAlpha,
       }),
     });
 

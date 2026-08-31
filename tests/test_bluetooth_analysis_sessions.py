@@ -33,8 +33,8 @@ def _sine_window(
     ]
 
 
-def _create_session(client) -> str:
-    created = client.post("/headset-fit/sessions")
+def _create_session(client, *, smooth_metrics: bool = False) -> str:
+    created = client.post("/headset-fit/sessions", json={"smoothMetrics": smooth_metrics})
     assert created.status_code == 200
     return created.json()["fitSessionId"]
 
@@ -76,7 +76,7 @@ def test_analyze_window_smooths_band_derived_metrics_across_calls() -> None:
     from fastapi.testclient import TestClient
 
     client = TestClient(app)
-    session_id = _create_session(client)
+    session_id = _create_session(client, smooth_metrics=True)
 
     low_focus_window = _sine_window(amplitude=6, freq_hz=4, sample_rate=256, seconds=2, channels=4)
     high_focus_window = _sine_window(amplitude=40, freq_hz=25, sample_rate=256, seconds=2, channels=4)

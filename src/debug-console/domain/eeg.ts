@@ -93,6 +93,7 @@ export interface SignalFeatures {
   calibrationProgress?: number;
   calibrationRequired?: number;
   rawMetrics?: Record<string, number>;
+  smoothedMetrics?: Record<string, number>;
   baselineRelativeMetrics?: Record<string, number>;
   interhemisphericCoherence?: number | null;
 }

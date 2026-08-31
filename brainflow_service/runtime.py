@@ -9,6 +9,7 @@ from typing import AsyncIterator
 import numpy as np
 
 from .analysis import AnalysisProviders, analyze_window
+from .metrics import DEFAULT_SMOOTHING_ALPHA, MetricPresentation
 from .config import DEFAULT_PROCESSING, DEVICE_CONFIGS, BrainFlowDeviceConfig, ProcessingConfig
 from .dsp import build_eeg_window, config_metadata
 from .headset_fit import HeuristicHeadsetFitProvider
@@ -25,6 +26,8 @@ class BrainFlowSession:
         processing: ProcessingConfig = DEFAULT_PROCESSING,
         protocol: str = "theta-beta-ratio",
         threshold: float = 1.85,
+        smooth_metrics: bool = False,
+        smoothing_alpha: float | None = None,
     ) -> None:
         self.id = str(uuid.uuid4())
         self.config = config
@@ -43,13 +46,21 @@ class BrainFlowSession:
         self._running = False
         # Every window this session analyzes goes through `analyze_window`
         # with this same provider bundle for the life of the connection.
-        self._analysis = AnalysisProviders(headset_fit=HeuristicHeadsetFitProvider())
+        self._analysis = AnalysisProviders(
+            headset_fit=HeuristicHeadsetFitProvider(),
+            presentation=(
+                MetricPresentation(
+                    DEFAULT_SMOOTHING_ALPHA if smoothing_alpha is None else smoothing_alpha,
+                ) if smooth_metrics
+                else MetricPresentation(DEFAULT_SMOOTHING_ALPHA, {"mindfulness"})
+            ),
+        )
 
     def start_metric_calibration(self, metric_names: set[str] | None = None) -> None:
-        self._analysis.metrics.start_calibration(metric_names)
+        self._analysis.presentation.start_calibration(metric_names)
 
     def reset_metric_calibration(self) -> None:
-        self._analysis.metrics.reset_calibration()
+        self._analysis.presentation.reset_calibration()
 
     def prepare(self) -> DeviceInfo:
         from brainflow.board_shim import BoardIds, BrainFlowInputParams, BrainFlowPresets, BoardShim

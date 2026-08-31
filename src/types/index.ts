@@ -79,12 +79,13 @@ export interface EEGDataPoint {
   bands: BandPowers;
   /** Which server band-power values were actually supplied for this frame. */
   bandAvailability: Partial<Record<keyof BandPowers, boolean>>;
-  /** Server-computed ratios, all derived from the same smoothed band snapshot. */
+  /** Canonical server-computed ratios, before any consumer presentation smoothing. */
   bandRatios: Record<string, number>;
   calibrationStatus?: 'off' | 'collecting' | 'active';
   calibrationProgress?: number;
   calibrationRequired?: number;
   rawMetrics?: Record<string, number>;
+  smoothedMetrics?: Record<string, number>;
   baselineRelativeMetrics?: Record<string, number>;
   thetaBetaRatio: number;
   thetaBetaRatioAvailable: boolean;

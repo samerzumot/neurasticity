@@ -630,7 +630,7 @@ h2 {
 }
 
 .derived-metric {
-  min-height: 82px;
+  min-height: 112px;
   padding: 0.7rem;
   position: relative;
 }
@@ -665,7 +665,7 @@ h2 {
   color: #fff;
   display: block;
   font-size: 1.05rem;
-  margin-top: 0.42rem;
+  margin-top: 0.75rem;
 }
 
 .metric-scope,
@@ -722,6 +722,12 @@ h2 {
 }
 
 .band-value-grid .channel-row { min-height: 88px; }
+
+.metric-alpha-input,
+.band-alpha-input { align-items: center; color: var(--text-muted); display: flex; font-size: 12px; gap: 6px; justify-content: center; }
+.metric-alpha-input { margin-top: 0.36rem; }
+.metric-alpha-input input,
+.band-alpha-input input { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 3px 6px; text-align: center; width: 52px; }
 
 .metric-calibration-actions {
   display: flex;

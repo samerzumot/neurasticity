@@ -66,6 +66,12 @@ export class EEGEngine {
   private latestServerRatios: Record<string, number> = {};
   private latestMetricCalibration: { status: 'off' | 'collecting' | 'active'; progress: number; required: number } = { status: 'off', progress: 0, required: 24 };
   private latestRawMetrics: Record<string, number> = {};
+  private latestSmoothedMetrics: Record<string, number> = {};
+  private consoleMetricSmoothingAlpha: number | null = null;
+
+  public setConsoleMetricSmoothing(alpha: number | null) {
+    this.consoleMetricSmoothingAlpha = alpha;
+  }
   private latestBaselineRelativeMetrics: Record<string, number> = {};
   private latestInterhemisphericCoherence: number | null = null;
   private latestTrainingFeedback: { ratio: number | null; inZone: boolean | null; zoneScore: number | null } | null = null;
@@ -217,7 +223,10 @@ export class EEGEngine {
     try {
       // Start server-side fit session first — required for all scoring
       try {
-        this.fitSessionId = await brainflowService.startFitSession();
+        this.fitSessionId = await brainflowService.startFitSession(
+          this.consoleMetricSmoothingAlpha !== null,
+          this.consoleMetricSmoothingAlpha ?? undefined,
+        );
       } catch (err: any) {
         return { success: false, error: `brainflow_service unavailable: ${err?.message || 'Cannot connect to http://127.0.0.1:8000'}` };
       }
@@ -447,7 +456,15 @@ export class EEGEngine {
    */
   public async connectBrainflowSession(deviceId = 'brainflow-synthetic'): Promise<{ success: boolean; error?: string }> {
     try {
-      const session = await brainflowService.startSession(deviceId, undefined, undefined, this.currentProtocol, this.targetThreshold);
+      const session = await brainflowService.startSession(
+        deviceId,
+        undefined,
+        undefined,
+        this.currentProtocol,
+        this.targetThreshold,
+        this.consoleMetricSmoothingAlpha !== null,
+        this.consoleMetricSmoothingAlpha ?? undefined,
+      );
       this.brainflowSessionId = session.sessionId;
       this.isBrainflowActive = true;
       this.isHardwareConnected = true;
@@ -504,8 +521,9 @@ export class EEGEngine {
             this.latestInterhemisphericCoherence = frame.features.interhemisphericCoherence ?? null;
             this.latestMetricCalibration = { status: frame.features.calibrationStatus ?? 'off', progress: frame.features.calibrationProgress ?? 0, required: frame.features.calibrationRequired ?? 24 };
             this.latestRawMetrics = frame.features.rawMetrics ?? {};
+            this.latestSmoothedMetrics = frame.features.smoothedMetrics ?? {};
             this.latestBaselineRelativeMetrics = frame.features.baselineRelativeMetrics ?? {};
-            this.latestTrainingFeedback = { ratio: frame.features.bandPowers?.ratios?.thetaBeta ?? null, inZone: frame.features.inZone ?? null, zoneScore: frame.features.zoneScore ?? null };
+            this.latestTrainingFeedback = { ratio: frame.features.rawMetrics?.["ratio:thetaBeta"] ?? frame.features.bandPowers?.ratios?.thetaBeta ?? null, inZone: frame.features.inZone ?? null, zoneScore: frame.features.zoneScore ?? null };
           }
 
           if (frame.training) {
@@ -749,8 +767,9 @@ export class EEGEngine {
           this.latestInterhemisphericCoherence = f.interhemisphericCoherence ?? null;
           this.latestMetricCalibration = { status: f.calibrationStatus ?? 'off', progress: f.calibrationProgress ?? 0, required: f.calibrationRequired ?? 24 };
           this.latestRawMetrics = f.rawMetrics ?? {};
+          this.latestSmoothedMetrics = f.smoothedMetrics ?? {};
           this.latestBaselineRelativeMetrics = f.baselineRelativeMetrics ?? {};
-          this.latestTrainingFeedback = { ratio: f.bandPowers?.ratios?.thetaBeta ?? null, inZone: f.inZone ?? null, zoneScore: f.zoneScore ?? null };
+          this.latestTrainingFeedback = { ratio: f.rawMetrics?.["ratio:thetaBeta"] ?? f.bandPowers?.ratios?.thetaBeta ?? null, inZone: f.inZone ?? null, zoneScore: f.zoneScore ?? null };
 
           // Extract band powers from server if available
           if (f.bandPowers?.absolute) {
@@ -1065,6 +1084,7 @@ export class EEGEngine {
       calibrationProgress: this.latestMetricCalibration.progress,
       calibrationRequired: this.latestMetricCalibration.required,
       rawMetrics: this.latestRawMetrics,
+      smoothedMetrics: this.latestSmoothedMetrics,
       baselineRelativeMetrics: this.latestBaselineRelativeMetrics,
       thetaBetaRatio,
       thetaBetaRatioAvailable,

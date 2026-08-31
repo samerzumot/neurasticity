@@ -36,7 +36,7 @@ from .headset_fit import (
     to_signal_quality_metadata,
 )
 from .models import SignalChannel, SignalFeatures, SignalQualityMetadata, TrainingMetricSampleModel
-from .metrics import MetricCalculator, MetricInput
+from .metrics import DEFAULT_SMOOTHING_ALPHA, MetricCalculator, MetricInput, MetricPresentation, _affective_from_smoothed_outputs, _display_values, compute_relative_band_powers
 from .training import TrainingScoreProvider
 
 
@@ -51,6 +51,9 @@ class AnalysisProviders:
     headset_fit: HeuristicHeadsetFitProvider
     training_score: TrainingScoreProvider = field(default_factory=TrainingScoreProvider)
     metrics: MetricCalculator = field(default_factory=MetricCalculator)
+    presentation: MetricPresentation = field(
+        default_factory=lambda: MetricPresentation(.05, {"mindfulness"}),
+    )
 
 
 @dataclass(frozen=True)
@@ -102,7 +105,7 @@ def analyze_window(
 
         if band_powers or brainflow_mindfulness is not None or brainflow_restfulness is not None:
             reliable = not fit_snapshot.excessive_artifact
-            snapshot = providers.metrics.push(MetricInput(
+            snapshot = providers.metrics.compute(MetricInput(
                 absolute_bands=band_powers.absolute if band_powers else {},
                 interhemispheric_coherence=interhemispheric_coherence,
                 raw_mindfulness=brainflow_mindfulness,
@@ -112,10 +115,12 @@ def analyze_window(
                 reliable=reliable,
                 fit=FitQualityHint(ready=fit_snapshot.ready, state=fit_snapshot.state),
             ))
+            presentation = providers.presentation.present(snapshot)
+            smoothed_affective = _affective_from_smoothed_outputs(presentation.smoothed_metrics)
             if band_powers:
                 band_powers = band_powers.model_copy(update={
-                    "absolute": snapshot.absolute_bands,
-                    "relative": snapshot.relative_bands,
+                    "absolute": presentation.smoothed_band_powers,
+                    "relative": compute_relative_band_powers(presentation.smoothed_band_powers),
                     "ratios": snapshot.ratios,
                 })
             training_sample = providers.training_score.push(
@@ -129,22 +134,23 @@ def analyze_window(
                 bandPowers=band_powers,
                 brainflowConcentration=brainflow_mindfulness,
                 brainflowRestfulness=brainflow_restfulness,
-                mindfulnessScore=snapshot.brainflow_scores.mindfulness_score,
-                restfulnessScore=snapshot.brainflow_scores.restfulness_score,
-                valence=snapshot.affective_state.valence if snapshot.affective_state else None,
-                arousal=snapshot.affective_state.arousal if snapshot.affective_state else None,
-                stateLabel=snapshot.affective_state.label if snapshot.affective_state else None,
-                confidence=snapshot.affective_state.confidence if snapshot.affective_state else None,
-                interhemisphericCoherence=snapshot.interhemispheric_coherence,
+                mindfulnessScore=presentation.smoothed_metrics.get("mindfulness"),
+                restfulnessScore=presentation.smoothed_metrics.get("restfulness"),
+                valence=presentation.smoothed_metrics.get("valence"),
+                arousal=presentation.smoothed_metrics.get("arousal"),
+                stateLabel=smoothed_affective.label if smoothed_affective else None,
+                confidence=presentation.smoothed_metrics.get("confidence"),
+                interhemisphericCoherence=presentation.smoothed_metrics.get("ihc"),
                 primaryMetricName=snapshot.protocol_feedback.metric_name,
                 primaryMetricValue=snapshot.protocol_feedback.value,
                 inZone=snapshot.protocol_feedback.in_zone,
                 zoneScore=snapshot.protocol_feedback.zone_score,
-                calibrationStatus=snapshot.calibration_status,
-                calibrationProgress=snapshot.calibration_progress,
-                calibrationRequired=snapshot.calibration_required,
-                rawMetrics=snapshot.raw_metrics,
-                baselineRelativeMetrics=snapshot.baseline_relative_metrics,
+                calibrationStatus=presentation.calibration_status,
+                calibrationProgress=presentation.calibration_progress,
+                calibrationRequired=presentation.calibration_required,
+                rawMetrics=_display_values(snapshot.brainflow_scores, snapshot.affective_state, snapshot.interhemispheric_coherence, snapshot.ratios),
+                smoothedMetrics=presentation.smoothed_metrics,
+                baselineRelativeMetrics=presentation.baseline_relative_metrics,
             )
 
     return WindowAnalysis(fit_snapshot=fit_snapshot, quality=quality, features=features, training=training)
@@ -169,10 +175,18 @@ class AnalysisSessionStore:
         self._last_used_s: dict[str, float] = {}
         self._idle_timeout_s = idle_timeout_s
 
-    def create(self, thresholds: HeadsetFitThresholds = BLUETOOTH_HEADSET_FIT_THRESHOLDS) -> str:
+    def create(self, thresholds: HeadsetFitThresholds = BLUETOOTH_HEADSET_FIT_THRESHOLDS, smooth_metrics: bool = False, smoothing_alpha: float | None = None) -> str:
         self._evict_idle()
         session_id = str(uuid.uuid4())
-        self._sessions[session_id] = AnalysisProviders(headset_fit=HeuristicHeadsetFitProvider(thresholds))
+        self._sessions[session_id] = AnalysisProviders(
+            headset_fit=HeuristicHeadsetFitProvider(thresholds),
+            presentation=(
+                MetricPresentation(
+                    DEFAULT_SMOOTHING_ALPHA if smoothing_alpha is None else smoothing_alpha,
+                ) if smooth_metrics
+                else MetricPresentation(DEFAULT_SMOOTHING_ALPHA, {"mindfulness"})
+            ),
+        )
         self._last_used_s[session_id] = time.monotonic()
         return session_id
 
