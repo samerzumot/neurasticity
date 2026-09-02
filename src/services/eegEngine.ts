@@ -298,6 +298,12 @@ export class EEGEngine {
 
           const ingestAthenaPacket = (value: DataView) => {
             this.packetsReceivedCount++;
+            if (this.packetsReceivedCount <= 3) {
+              console.info('[EEG BLE] Athena packet received', {
+                packet: this.packetsReceivedCount,
+                bytes: value.byteLength,
+              });
+            }
             try {
               const output = athenaDecoder.decode(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
               const channels = output.eeg_channel_count;
@@ -329,6 +335,15 @@ export class EEGEngine {
             }
           };
 
+          // Athena's control endpoint is notify-capable. The reference Muse
+          // transport enables it before streaming; without that subscription
+          // some firmware revisions accept commands but do not begin sending.
+          await BleClient.startNotifications(
+            device.id,
+            eegService,
+            '273e0001-4c4d-454d-96be-f03bac821358',
+            () => console.info('[EEG BLE] Athena control notification received'),
+          );
           await BleClient.startNotifications(device.id, eegService, athenaEegChar, ingestAthenaPacket);
           await BleClient.startNotifications(device.id, eegService, athenaOtherChar, ingestAthenaPacket);
 
