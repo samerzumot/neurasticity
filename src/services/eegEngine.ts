@@ -256,6 +256,22 @@ export class EEGEngine {
           this.disconnectHardware();
         });
 
+        // This is intentionally logged before subscribing so an iOS device
+        // whose Muse firmware uses a different profile can be identified from
+        // the Xcode console without guessing UUIDs.
+        try {
+          const services = await BleClient.getServices(device.id);
+          console.info('[EEG BLE] discovered GATT profile', services.map((service) => ({
+            service: service.uuid,
+            characteristics: service.characteristics.map((characteristic) => ({
+              uuid: characteristic.uuid,
+              properties: characteristic.properties,
+            })),
+          })));
+        } catch (error) {
+          console.error('[EEG BLE] unable to read discovered GATT profile', error);
+        }
+
         this.isHardwareConnected = true;
         this.isDemoMode = false;
         this.deviceName = device.name || 'Muse Headband';
