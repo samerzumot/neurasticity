@@ -6,11 +6,9 @@ import { AthenaWasmDecoder, BleTransport } from '@elata-biosciences/eeg-web-ble'
 import { initEegWasm, type HeadbandFrameV1 } from '@elata-biosciences/eeg-web';
 import eegWasmUrl from '@elata-biosciences/eeg-web/wasm/eeg_wasm_bg.wasm?url';
 
-// Muse's EEG streaming and control characteristics (273e0001–273e0006) are
-// exposed under this proprietary Muse service, not the Bluetooth SIG FE8D
-// service. Using FE8D connects successfully but leaves every EEG channel
-// unavailable on iOS.
-const MUSE_EEG_SERVICE_UUID = '273e0000-4c4d-454d-96be-f03bac821358';
+// Muse's EEG data service contains the 273e0001–273e0006 control and signal
+// characteristics. It is also the service advertised during device discovery.
+const MUSE_EEG_SERVICE_UUID = '0000fe8d-0000-1000-8000-00805f9b34fb';
 
 export class EEGEngine {
   private isRunning = false;
