@@ -6,6 +6,12 @@ import { AthenaWasmDecoder, BleTransport } from '@elata-biosciences/eeg-web-ble'
 import { initEegWasm, type HeadbandFrameV1 } from '@elata-biosciences/eeg-web';
 import eegWasmUrl from '@elata-biosciences/eeg-web/wasm/eeg_wasm_bg.wasm?url';
 
+// Muse's EEG streaming and control characteristics (273e0001–273e0006) are
+// exposed under this proprietary Muse service, not the Bluetooth SIG FE8D
+// service. Using FE8D connects successfully but leaves every EEG channel
+// unavailable on iOS.
+const MUSE_EEG_SERVICE_UUID = '273e0000-4c4d-454d-96be-f03bac821358';
+
 export class EEGEngine {
   private isRunning = false;
   private timer: number | null = null;
@@ -244,7 +250,7 @@ export class EEGEngine {
       if (Capacitor.isNativePlatform()) {
         await BleClient.initialize({ androidNeverForLocation: true });
         const bleDevice = await BleClient.requestDevice({
-          services: ['0000fe8d-0000-1000-8000-00805f9b34fb'],
+          services: [MUSE_EEG_SERVICE_UUID],
         });
         device = { id: bleDevice.deviceId, name: bleDevice.name };
         
@@ -257,7 +263,7 @@ export class EEGEngine {
         this.deviceName = device.name || 'Muse Headband';
         this.gattServer = { connected: true, deviceId: device.id };
 
-        const eegService = '0000fe8d-0000-1000-8000-00805f9b34fb';
+        const eegService = MUSE_EEG_SERVICE_UUID;
         const channelUUIDs: Record<keyof MuseChannelQuality, string> = {
           tp9: '273e0003-4c4d-454d-96be-f03bac821358',
           af7: '273e0004-4c4d-454d-96be-f03bac821358',
@@ -325,7 +331,7 @@ export class EEGEngine {
         this.disconnectHardware();
       });
 
-      const eegService = await this.gattServer.getPrimaryService('0000fe8d-0000-1000-8000-00805f9b34fb');
+      const eegService = await this.gattServer.getPrimaryService(MUSE_EEG_SERVICE_UUID);
 
       // Muse EEG Characteristic UUIDs for TP9, AF7, AF8, and TP10 (scalp electrodes only — no AUX)
       const channelUUIDs: Record<keyof MuseChannelQuality, string> = {
