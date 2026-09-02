@@ -256,6 +256,10 @@ export class EEGEngine {
           this.disconnectHardware();
         });
 
+        const athenaEegChar = '273e0013-4c4d-454d-96be-f03bac821358';
+        const athenaOtherChar = '273e0014-4c4d-454d-96be-f03bac821358';
+        let isAthenaProfile = false;
+
         // This is intentionally logged before subscribing so an iOS device
         // whose Muse firmware uses a different profile can be identified from
         // the Xcode console without guessing UUIDs.
@@ -268,6 +272,10 @@ export class EEGEngine {
               properties: characteristic.properties,
             })),
           })));
+          isAthenaProfile = services.some((service) => {
+            const characteristicUuids = service.characteristics.map((characteristic) => characteristic.uuid.toLowerCase());
+            return characteristicUuids.includes(athenaEegChar) && characteristicUuids.includes(athenaOtherChar);
+          });
         } catch (error) {
           console.error('[EEG BLE] unable to read discovered GATT profile', error);
         }
@@ -278,6 +286,77 @@ export class EEGEngine {
         this.gattServer = { connected: true, deviceId: device.id };
 
         const eegService = MUSE_EEG_SERVICE_UUID;
+        if (isAthenaProfile) {
+          // Muse S Athena multiplexes all eight EEG channels through 273e0013.
+          // Decode those packets with the same WASM decoder used in the working
+          // browser transport, then retain only the four scalp electrodes.
+          await initEegWasm(eegWasmUrl);
+          const athenaDecoder = new AthenaWasmDecoder();
+          athenaDecoder.set_use_device_timestamps(true);
+          athenaDecoder.set_clock_kind('windowed');
+          athenaDecoder.set_reorder_window_ms(0);
+
+          const ingestAthenaPacket = (value: DataView) => {
+            this.packetsReceivedCount++;
+            try {
+              const output = athenaDecoder.decode(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+              const channels = output.eeg_channel_count;
+              const samples = output.eeg_samples;
+              for (let index = 0; index + channels <= samples.length && channels >= 4; index += channels) {
+                this.rawBuffers.tp9.push(samples[index]);
+                this.rawBuffers.af7.push(samples[index + 1]);
+                this.rawBuffers.af8.push(samples[index + 2]);
+                this.rawBuffers.tp10.push(samples[index + 3]);
+              }
+              for (const channel of Object.keys(this.rawBuffers) as Array<keyof MuseChannelQuality>) {
+                if (this.rawBuffers[channel].length > this.maxBufferSize) {
+                  this.rawBuffers[channel] = this.rawBuffers[channel].slice(-this.maxBufferSize);
+                }
+              }
+              output.free();
+            } catch (error) {
+              console.error('[EEG BLE] Athena packet decode failed', error);
+            }
+            if (this.packetsReceivedCount % 100 === 0) {
+              console.info('[EEG BLE]', {
+                protocol: 'athena',
+                packets: this.packetsReceivedCount,
+                tp9: this.rawBuffers.tp9.length,
+                af7: this.rawBuffers.af7.length,
+                af8: this.rawBuffers.af8.length,
+                tp10: this.rawBuffers.tp10.length,
+              });
+            }
+          };
+
+          await BleClient.startNotifications(device.id, eegService, athenaEegChar, ingestAthenaPacket);
+          await BleClient.startNotifications(device.id, eegService, athenaOtherChar, ingestAthenaPacket);
+
+          const sendAthenaCommand = async (command: string) => {
+            const bytes = new Uint8Array(command.length + 2);
+            bytes[0] = command.length + 1;
+            for (let index = 0; index < command.length; index++) bytes[index + 1] = command.charCodeAt(index);
+            bytes[bytes.length - 1] = 0x0a;
+            await BleClient.writeWithoutResponse(
+              device.id,
+              eegService,
+              '273e0001-4c4d-454d-96be-f03bac821358',
+              new DataView(bytes.buffer),
+            );
+          };
+          const pause = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+          for (const [command, delay] of [
+            ['v6', 200], ['s', 200], ['h', 200], ['p1041', 200], ['s', 200], ['dc001', 50], ['dc001', 100], ['s', 0],
+          ] as const) {
+            await sendAthenaCommand(command);
+            if (delay > 0) await pause(delay);
+          }
+
+          console.info('[EEG BLE] Athena streaming started');
+          await this.startHostedBluetoothAnalysis();
+          return { success: true, deviceName: this.deviceName || undefined };
+        }
+
         const channelUUIDs: Record<keyof MuseChannelQuality, string> = {
           tp9: '273e0003-4c4d-454d-96be-f03bac821358',
           af7: '273e0004-4c4d-454d-96be-f03bac821358',
