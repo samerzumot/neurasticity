@@ -52,7 +52,6 @@ export class EEGEngine {
   private bluetoothConnectionGeneration = 0;
   private isStartingFitSession = false;
   private hostedAnalysisFailures = 0;
-  private lastAnalysisDiagnosticAt = 0;
 
   // Channel quality — driven exclusively by server-side fit assessment
   public channelQuality: MuseChannelQuality = {
@@ -260,25 +259,13 @@ export class EEGEngine {
         const athenaOtherChar = '273e0014-4c4d-454d-96be-f03bac821358';
         let isAthenaProfile = false;
 
-        // This is intentionally logged before subscribing so an iOS device
-        // whose Muse firmware uses a different profile can be identified from
-        // the Xcode console without guessing UUIDs.
         try {
           const services = await BleClient.getServices(device.id);
-          console.info('[EEG BLE] discovered GATT profile', services.map((service) => ({
-            service: service.uuid,
-            characteristics: service.characteristics.map((characteristic) => ({
-              uuid: characteristic.uuid,
-              properties: characteristic.properties,
-            })),
-          })));
           isAthenaProfile = services.some((service) => {
             const characteristicUuids = service.characteristics.map((characteristic) => characteristic.uuid.toLowerCase());
             return characteristicUuids.includes(athenaEegChar) && characteristicUuids.includes(athenaOtherChar);
           });
-        } catch (error) {
-          console.error('[EEG BLE] unable to read discovered GATT profile', error);
-        }
+        } catch {}
 
         this.isHardwareConnected = true;
         this.isDemoMode = false;
@@ -298,12 +285,6 @@ export class EEGEngine {
 
           const ingestAthenaPacket = (value: DataView) => {
             this.packetsReceivedCount++;
-            if (this.packetsReceivedCount <= 3) {
-              console.info('[EEG BLE] Athena packet received', {
-                packet: this.packetsReceivedCount,
-                bytes: value.byteLength,
-              });
-            }
             try {
               const output = athenaDecoder.decode(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
               const channels = output.eeg_channel_count;
@@ -320,19 +301,7 @@ export class EEGEngine {
                 }
               }
               output.free();
-            } catch (error) {
-              console.error('[EEG BLE] Athena packet decode failed', error);
-            }
-            if (this.packetsReceivedCount % 100 === 0) {
-              console.info('[EEG BLE]', {
-                protocol: 'athena',
-                packets: this.packetsReceivedCount,
-                tp9: this.rawBuffers.tp9.length,
-                af7: this.rawBuffers.af7.length,
-                af8: this.rawBuffers.af8.length,
-                tp10: this.rawBuffers.tp10.length,
-              });
-            }
+            } catch {}
           };
 
           // Athena's control endpoint is notify-capable. The reference Muse
@@ -342,7 +311,7 @@ export class EEGEngine {
             device.id,
             eegService,
             '273e0001-4c4d-454d-96be-f03bac821358',
-            () => console.info('[EEG BLE] Athena control notification received'),
+            () => {},
           );
           await BleClient.startNotifications(device.id, eegService, athenaEegChar, ingestAthenaPacket);
           await BleClient.startNotifications(device.id, eegService, athenaOtherChar, ingestAthenaPacket);
@@ -367,7 +336,6 @@ export class EEGEngine {
             if (delay > 0) await pause(delay);
           }
 
-          console.info('[EEG BLE] Athena streaming started');
           await this.startHostedBluetoothAnalysis();
           return { success: true, deviceName: this.deviceName || undefined };
         }
@@ -388,15 +356,6 @@ export class EEGEngine {
               (value) => {
                 this.packetsReceivedCount++;
                 this.parseChannelPacket(channel as keyof MuseChannelQuality, value);
-                if (this.packetsReceivedCount % 100 === 0) {
-                  console.info('[EEG BLE]', {
-                    packets: this.packetsReceivedCount,
-                    tp9: this.rawBuffers.tp9.length,
-                    af7: this.rawBuffers.af7.length,
-                    af8: this.rawBuffers.af8.length,
-                    tp10: this.rawBuffers.tp10.length,
-                  });
-                }
               }
             );
           } catch (err) {
@@ -1201,20 +1160,6 @@ export class EEGEngine {
     const tp10 = this.rawBuffers.tp10;
 
     const minLen = Math.min(tp9.length, af7.length, af8.length, tp10.length);
-    const diagnosticNow = Date.now();
-    if (diagnosticNow - this.lastAnalysisDiagnosticAt >= 1000) {
-      this.lastAnalysisDiagnosticAt = diagnosticNow;
-      console.info('[EEG analysis]', {
-        minLen,
-        fitSessionId: this.fitSessionId,
-        buffers: {
-          tp9: tp9.length,
-          af7: af7.length,
-          af8: af8.length,
-          tp10: tp10.length,
-        },
-      });
-    }
     // Interhemispheric coherence is a cross-spectral estimate. It needs at
     // least two 1-second segments, so keep a two-second window rather than
     // sending the one-second window used by the other band metrics.
