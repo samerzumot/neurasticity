@@ -48,6 +48,7 @@ export class EEGEngine {
   private bluetoothConnectionGeneration = 0;
   private isStartingFitSession = false;
   private hostedAnalysisFailures = 0;
+  private lastAnalysisDiagnosticAt = 0;
 
   // Channel quality — driven exclusively by server-side fit assessment
   public channelQuality: MuseChannelQuality = {
@@ -273,6 +274,15 @@ export class EEGEngine {
               (value) => {
                 this.packetsReceivedCount++;
                 this.parseChannelPacket(channel as keyof MuseChannelQuality, value);
+                if (this.packetsReceivedCount % 100 === 0) {
+                  console.info('[EEG BLE]', {
+                    packets: this.packetsReceivedCount,
+                    tp9: this.rawBuffers.tp9.length,
+                    af7: this.rawBuffers.af7.length,
+                    af8: this.rawBuffers.af8.length,
+                    tp10: this.rawBuffers.tp10.length,
+                  });
+                }
               }
             );
           } catch (err) {
@@ -1077,6 +1087,20 @@ export class EEGEngine {
     const tp10 = this.rawBuffers.tp10;
 
     const minLen = Math.min(tp9.length, af7.length, af8.length, tp10.length);
+    const diagnosticNow = Date.now();
+    if (diagnosticNow - this.lastAnalysisDiagnosticAt >= 1000) {
+      this.lastAnalysisDiagnosticAt = diagnosticNow;
+      console.info('[EEG analysis]', {
+        minLen,
+        fitSessionId: this.fitSessionId,
+        buffers: {
+          tp9: tp9.length,
+          af7: af7.length,
+          af8: af8.length,
+          tp10: tp10.length,
+        },
+      });
+    }
     // Interhemispheric coherence is a cross-spectral estimate. It needs at
     // least two 1-second segments, so keep a two-second window rather than
     // sending the one-second window used by the other band metrics.
