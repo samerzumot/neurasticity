@@ -240,12 +240,20 @@ class BrainFlowService {
         clearTimeout(timeoutId);
       }
 
-      if (!res.ok) return null;
+      if (!res.ok) {
+        console.error('[EEG analysis] API error', {
+          status: res.status,
+          statusText: res.statusText,
+          body: await res.text(),
+        });
+        return null;
+      }
 
       const data: FitWindowResponse = await res.json();
       this.isOnline = true;
       return data;
-    } catch {
+    } catch (error) {
+      console.error('[EEG analysis] request failed', error);
       return null;
     }
   }
