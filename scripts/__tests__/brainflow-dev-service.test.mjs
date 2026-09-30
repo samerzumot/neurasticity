@@ -4,16 +4,18 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   LOCAL_BRAINFLOW_URL,
+  chooseDevService,
   isServiceHealthy,
-  requireDevService,
-  resolveDevServiceUrl,
+  resolveConfiguredHosted,
+  resolveExplicitOverride,
   standaloneServiceInstructions,
 } from '../brainflow-dev-service.mjs';
 
 const HOSTED = 'https://hosted-brainflow.example.com';
+const OVERRIDE = 'http://127.0.0.1:8123';
 const dirs = [];
 
-function project(files = {}) {
+function project(files = { '.env': `VITE_BRAINFLOW_SERVICE_URL=${HOSTED}/\n` }) {
   const root = mkdtempSync(join(tmpdir(), 'bf-dev-'));
   dirs.push(root);
   const cwd = join(root, 'app');
@@ -22,52 +24,98 @@ function project(files = {}) {
   return cwd;
 }
 
-const healthy = () => vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'ok' }) });
+/** A fake network where only the listed base URLs answer /health with status ok. */
+function network(...healthyBases) {
+  return vi.fn(async (url) => {
+    if (healthyBases.some((base) => url === `${base}/health`)) return { ok: true, json: async () => ({ status: 'ok' }) };
+    throw new Error('connection refused');
+  });
+}
+
+const quiet = { log: () => {} };
 
 afterEach(() => {
   while (dirs.length) rmSync(dirs.pop(), { recursive: true, force: true });
 });
 
-describe('resolveDevServiceUrl', () => {
-  it('defaults to the local service and ignores the tracked production .env', () => {
-    const cwd = project({ '.env': `VITE_BRAINFLOW_SERVICE_URL=${HOSTED}\n` });
-    expect(resolveDevServiceUrl({ cwd, env: {} })).toEqual({ url: LOCAL_BRAINFLOW_URL, source: 'local default', isLocalDefault: true });
+describe('chooseDevService', () => {
+  it('uses the configured hosted service when no local service is running', async () => {
+    const fetchHealth = network(HOSTED);
+    await expect(chooseDevService({ cwd: project(), env: {}, fetchHealth, ...quiet }))
+      .resolves.toMatchObject({ url: HOSTED, kind: 'hosted' });
+    expect(fetchHealth).toHaveBeenNthCalledWith(1, `${LOCAL_BRAINFLOW_URL}/health`, expect.any(Object));
   });
 
-  it('uses the tracked .env only when the production backend is requested', () => {
-    const cwd = project({ '.env': `VITE_BRAINFLOW_SERVICE_URL=${HOSTED}/\n` });
-    expect(resolveDevServiceUrl({ cwd, env: {}, productionBackend: true }).url).toBe(HOSTED);
-    expect(() => resolveDevServiceUrl({ cwd: project(), env: {}, productionBackend: true })).toThrow(/tracked \.env/);
+  it('prefers a healthy local service over the hosted one', async () => {
+    const fetchHealth = network(LOCAL_BRAINFLOW_URL, HOSTED);
+    await expect(chooseDevService({ cwd: project(), env: {}, fetchHealth, ...quiet }))
+      .resolves.toMatchObject({ url: LOCAL_BRAINFLOW_URL, kind: 'local' });
+    expect(fetchHealth).toHaveBeenCalledTimes(1);
   });
 
-  it('prefers the environment, then local override files in Vite order', () => {
+  it('falls back to hosted when something unhealthy answers on port 8000', async () => {
+    const fetchHealth = vi.fn(async (url) => (url.startsWith(LOCAL_BRAINFLOW_URL)
+      ? { ok: false, status: 404, json: async () => ({}) }
+      : { ok: true, json: async () => ({ status: 'ok' }) }));
+    await expect(chooseDevService({ cwd: project(), env: {}, fetchHealth, ...quiet }))
+      .resolves.toMatchObject({ url: HOSTED, kind: 'hosted' });
+  });
+
+  it('uses an explicit override without probing local or hosted', async () => {
+    const fetchHealth = network(OVERRIDE, LOCAL_BRAINFLOW_URL, HOSTED);
+    await expect(chooseDevService({ cwd: project(), env: { VITE_BRAINFLOW_SERVICE_URL: OVERRIDE }, fetchHealth, ...quiet }))
+      .resolves.toMatchObject({ url: OVERRIDE, source: 'the environment', kind: 'override' });
+    expect(fetchHealth).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not silently fall back away from an unhealthy override', async () => {
+    const cwd = project({ '.env': `VITE_BRAINFLOW_SERVICE_URL=${HOSTED}\n`, '.env.local': `VITE_BRAINFLOW_SERVICE_URL=${OVERRIDE}\n` });
+    await expect(chooseDevService({ cwd, env: {}, fetchHealth: network(LOCAL_BRAINFLOW_URL, HOSTED), ...quiet }))
+      .rejects.toThrow(/No healthy BrainFlow service at http:\/\/127\.0\.0\.1:8123 \(explicit override from \.env\.local\)/);
+  });
+
+  it('skips the local service when hosted-only is requested', async () => {
+    await expect(chooseDevService({ cwd: project(), env: {}, hostedOnly: true, fetchHealth: network(LOCAL_BRAINFLOW_URL, HOSTED), ...quiet }))
+      .resolves.toMatchObject({ url: HOSTED, kind: 'hosted' });
+  });
+
+  it('fails clearly when neither local nor hosted is usable', async () => {
+    await expect(chooseDevService({ cwd: project(), env: {}, fetchHealth: network(), ...quiet }))
+      .rejects.toThrow(/No healthy local BrainFlow service[\s\S]*No healthy hosted BrainFlow service at https:\/\/hosted-brainflow\.example\.com[\s\S]*uv run uvicorn brainflow_service\.app:app/);
+    await expect(chooseDevService({ cwd: project({}), env: {}, fetchHealth: network(), ...quiet }))
+      .rejects.toThrow(/No hosted service configured/);
+  });
+});
+
+describe('configuration', () => {
+  it('reads overrides from the environment, then local files in Vite order, never the tracked .env', () => {
     const cwd = project({
       '.env': `VITE_BRAINFLOW_SERVICE_URL=${HOSTED}\n`,
       '.env.development': 'VITE_BRAINFLOW_SERVICE_URL=http://127.0.0.1:8003\n',
       '.env.local': 'VITE_BRAINFLOW_SERVICE_URL=http://127.0.0.1:8002\n',
       '.env.development.local': 'VITE_BRAINFLOW_SERVICE_URL=http://127.0.0.1:8001\n',
     });
-    expect(resolveDevServiceUrl({ cwd, env: { VITE_BRAINFLOW_SERVICE_URL: 'http://127.0.0.1:9000' } }).source).toBe('the environment');
-    expect(resolveDevServiceUrl({ cwd, env: {}, productionBackend: true })).toMatchObject({ url: 'http://127.0.0.1:8001', source: '.env.development.local' });
+    expect(resolveExplicitOverride({ cwd, env: { VITE_BRAINFLOW_SERVICE_URL: 'http://127.0.0.1:9000/' } })).toEqual({ url: 'http://127.0.0.1:9000', source: 'the environment' });
+    expect(resolveExplicitOverride({ cwd, env: {} })).toMatchObject({ source: '.env.development.local' });
     rmSync(join(cwd, '.env.development.local'));
-    expect(resolveDevServiceUrl({ cwd, env: {} })).toMatchObject({ url: 'http://127.0.0.1:8002', source: '.env.local' });
+    expect(resolveExplicitOverride({ cwd, env: {} })).toMatchObject({ source: '.env.local' });
     rmSync(join(cwd, '.env.local'));
-    expect(resolveDevServiceUrl({ cwd, env: {} })).toMatchObject({ url: 'http://127.0.0.1:8003', source: '.env.development' });
+    expect(resolveExplicitOverride({ cwd, env: {} })).toMatchObject({ source: '.env.development' });
+    rmSync(join(cwd, '.env.development'));
+    expect(resolveExplicitOverride({ cwd, env: {} })).toBeUndefined();
+    expect(resolveConfiguredHosted({ cwd })).toMatchObject({ url: HOSTED });
   });
 
   it('rejects malformed or non-HTTP URLs with their source', () => {
-    expect(() => resolveDevServiceUrl({ cwd: project(), env: { VITE_BRAINFLOW_SERVICE_URL: 'not a url' } })).toThrow(/the environment is not a valid URL/);
+    expect(() => resolveExplicitOverride({ cwd: project(), env: { VITE_BRAINFLOW_SERVICE_URL: 'not a url' } })).toThrow(/the environment is not a valid URL/);
     const cwd = project({ '.env.local': 'VITE_BRAINFLOW_SERVICE_URL=ftp://127.0.0.1\n' });
-    expect(() => resolveDevServiceUrl({ cwd, env: {} })).toThrow(/\.env\.local must use HTTP or HTTPS/);
+    expect(() => resolveExplicitOverride({ cwd, env: {} })).toThrow(/\.env\.local must use HTTP or HTTPS/);
   });
-});
 
-describe('health and instructions', () => {
-  it('requires HTTP success and status ok', async () => {
-    expect(await isServiceHealthy(LOCAL_BRAINFLOW_URL, { fetchHealth: healthy() })).toBe(true);
+  it('requires HTTP success and status ok for health', async () => {
     const degraded = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'degraded' }) });
     expect(await isServiceHealthy(LOCAL_BRAINFLOW_URL, { fetchHealth: degraded })).toBe(false);
-    expect(await isServiceHealthy(LOCAL_BRAINFLOW_URL, { fetchHealth: vi.fn().mockRejectedValue(new Error('refused')) })).toBe(false);
+    expect(await isServiceHealthy(LOCAL_BRAINFLOW_URL, { fetchHealth: network(LOCAL_BRAINFLOW_URL) })).toBe(true);
   });
 
   it('names a sibling brainflow-service checkout only when it exists', () => {
@@ -77,17 +125,5 @@ describe('health and instructions', () => {
     mkdirSync(sibling, { recursive: true });
     writeFileSync(join(sibling, 'app.py'), '');
     expect(standaloneServiceInstructions({ cwd })).toContain(join(cwd, '..', 'brainflow-service'));
-  });
-
-  it('explains how to start the standalone service when the local default is down', async () => {
-    const fetchHealth = vi.fn().mockRejectedValue(new Error('refused'));
-    await expect(requireDevService({ cwd: project(), env: {}, fetchHealth, hostedAlternative: 'Or: npm run dev:render' }))
-      .rejects.toThrow(/No healthy BrainFlow service at http:\/\/127\.0\.0\.1:8000[\s\S]*uv run uvicorn brainflow_service\.app:app[\s\S]*npm run dev:render/);
-    expect(fetchHealth).toHaveBeenCalledWith(`${LOCAL_BRAINFLOW_URL}/health`, expect.any(Object));
-  });
-
-  it('returns the checked service when healthy', async () => {
-    await expect(requireDevService({ cwd: project(), env: {}, fetchHealth: healthy() }))
-      .resolves.toMatchObject({ url: LOCAL_BRAINFLOW_URL, isLocalDefault: true });
   });
 });

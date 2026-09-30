@@ -1,14 +1,16 @@
 import { spawn } from "node:child_process";
-import { requireDevService } from "./brainflow-dev-service.mjs";
+import { chooseDevService } from "./brainflow-dev-service.mjs";
 
-// Starts the Vite dev server against an already-running BrainFlow service.
-// The backend is the standalone brainflow-service repository; this script
-// never starts, stops or restarts a backend process. See README.md.
+// Starts the Vite dev server against a BrainFlow service: an explicit
+// VITE_BRAINFLOW_SERVICE_URL override, else a healthy local brainflow-service on
+// http://127.0.0.1:8000, else the hosted Render service from the tracked .env.
+// This script never starts, stops, restarts or replaces a backend process.
+// See README.md and scripts/brainflow-dev-service.mjs.
 //
-//   npm run dev          local service (http://127.0.0.1:8000 unless overridden)
-//   npm run dev:render   the hosted service production builds use (tracked .env)
+//   npm run dev          override, else local if running, else hosted
+//   npm run dev:render   override, else hosted (skips the local service)
 
-const productionBackend = process.argv.includes("--production-backend");
+const hostedOnly = process.argv.includes("--hosted");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
 let frontend;
@@ -32,10 +34,7 @@ process.on("SIGINT", () => stopChildren());
 process.on("SIGTERM", () => stopChildren());
 
 try {
-  const service = await requireDevService({
-    productionBackend,
-    hostedAlternative: "Or run against the hosted service instead: npm run dev:render",
-  });
+  const service = await chooseDevService({ hostedOnly });
   console.log(`Using BrainFlow service ${service.url} (from ${service.source}).`);
   // A variable already in the environment takes precedence over every .env
   // file, so the dev server uses exactly the service checked above.

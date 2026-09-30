@@ -14,10 +14,32 @@ Install the web app dependencies:
 npm install
 ```
 
-The BrainFlow analysis backend is the standalone
-[`brainflow-service`](https://github.com/rosscolborne/brainflow-service)
-repository (Python 3.11+ with `uv`). Clone it next to this repository and start
-it in its own terminal:
+Start the app:
+
+```bash
+npm run dev
+```
+
+`npm run dev` picks a BrainFlow analysis service, prints which one it is
+using, and starts Vite (normally `http://localhost:5173`) pointed at it. First
+usable wins:
+
+1. an explicit override: `VITE_BRAINFLOW_SERVICE_URL` set in the shell, or in
+   the untracked `.env.development.local`, `.env.local` or `.env.development`
+   (it must be healthy; there is no fallback away from an override);
+2. a healthy local [`brainflow-service`](https://github.com/rosscolborne/brainflow-service)
+   at `http://127.0.0.1:8000`;
+3. the hosted Render service configured in the tracked `.env` (the same URL
+   production builds use).
+
+With no local service running, `npm run dev` therefore uses Render, as it
+always has. It exits with a clear error only if none of these is healthy. It
+never starts, stops, restarts or replaces a backend, and leaves anything else
+listening on port 8000 alone. Press `Ctrl+C` to stop Vite.
+
+To debug the backend locally, run the standalone service (Python 3.11+ with
+`uv`) from its own checkout, then start `npm run dev`; it prefers the local
+service automatically:
 
 ```bash
 cd ../brainflow-service
@@ -25,36 +47,11 @@ uv sync --extra test        # first time only
 uv run uvicorn brainflow_service.app:app --host 127.0.0.1 --port 8000
 ```
 
-Then start the frontend:
-
-```bash
-npm run dev
-```
-
-`npm run dev` health-checks the BrainFlow service, prints which one it is
-using, and starts Vite (normally `http://localhost:5173`) pointed at it. It
-never starts, stops or restarts a backend, and it exits with instructions if
-the service is not healthy. `npm run brainflow` prints the same status and
-start instructions without starting anything. Press `Ctrl+C` to stop Vite.
-
-Which service `npm run dev` uses, first match wins:
-
-1. `VITE_BRAINFLOW_SERVICE_URL` set in the shell;
-2. `VITE_BRAINFLOW_SERVICE_URL` in `.env.development.local`, `.env.local` or
-   `.env.development` (untracked local overrides);
-3. otherwise the local service at `http://127.0.0.1:8000`.
-
-To run the local frontend against the hosted Render service instead (no local
-backend needed; BrainFlow-direct hardware paths then do not work), use:
-
-```bash
-npm run dev:render
-```
-
-The tracked `.env` holds the hosted Render URL that production builds use; the
-dev launchers deliberately ignore it unless `npm run dev:render` is used.
-`npm run dev:web` starts Vite alone with Vite's normal environment resolution,
-which picks up that hosted URL.
+`npm run dev:render` skips the local service and uses the hosted one even when
+a local service is running. `npm run brainflow` prints which service
+`npm run dev` would use and how to start the local one, without starting
+anything. `npm run dev:web` starts Vite alone with Vite's normal environment
+resolution (the hosted URL from the tracked `.env`).
 
 The embedded `brainflow_service/` directory is an older copy of the backend,
 kept temporarily as a rollback. `npm run brainflow:embedded` still runs it on
@@ -67,17 +64,15 @@ acquisition, hardware-provider validation, recording, replay, live plots, and
 signal-quality debugging. It uses the same BrainFlow service as
 Neurasticity, but does not form part of the patient or clinician UI.
 
-Start the standalone `brainflow-service` as above, then:
-
 ```bash
 npm run debug_console
 ```
 
-This opens the console at `http://127.0.0.1:5174/debug-console.html`. It uses
-the same service resolution as `npm run dev` (normally the local service) and
-exits with instructions if that service is not healthy. It has no hosted
-option: BrainFlow-direct Muse acquisition needs the service running on the
-same machine as the headset. Stop it with `Ctrl+C`.
+This opens the console at `http://127.0.0.1:5174/debug-console.html`. It picks
+its BrainFlow service the same way as `npm run dev` (override, else a healthy
+local service, else the hosted one). BrainFlow-direct Muse acquisition only
+works with a local `brainflow-service` on the same machine as the headset, so
+start it first for that. Stop the console with `Ctrl+C`.
 
 ## Vercel + Render deployment
 

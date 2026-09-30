@@ -6,26 +6,27 @@ import { parseEnv } from 'node:util';
 /**
  * Chooses the BrainFlow service a local development server talks to.
  *
- * The backend is the standalone `brainflow-service` repository, run separately
- * (normally on http://127.0.0.1:8000). These launchers never start, stop or
- * restart a backend process, and never touch whatever is listening on a port.
+ * The backend is the standalone `brainflow-service` repository. These launchers
+ * never start, stop, restart or replace a backend process, and never touch
+ * whatever is listening on a port.
  *
- * Resolution, first match wins:
- * 1. VITE_BRAINFLOW_SERVICE_URL in the process environment;
- * 2. VITE_BRAINFLOW_SERVICE_URL in a developer-local override file:
- *    .env.development.local, .env.local, .env.development (Vite's order);
- * 3. with `productionBackend`, the value in the tracked `.env` — the hosted
- *    service production builds use;
- * 4. otherwise the local default, http://127.0.0.1:8000.
+ * Order, first usable wins:
+ * 1. An explicit override: VITE_BRAINFLOW_SERVICE_URL in the shell, or in
+ *    .env.development.local / .env.local / .env.development (Vite's order).
+ *    It must be healthy; there is no silent fallback away from an override.
+ * 2. A healthy local service at http://127.0.0.1:8000 (the standalone
+ *    brainflow-service, started deliberately for backend work).
+ * 3. The configured hosted service: VITE_BRAINFLOW_SERVICE_URL in the tracked
+ *    `.env`, the same Render URL production builds use.
+ * Otherwise it fails with an error that covers both local and hosted.
  *
- * The tracked `.env` is deliberately skipped unless asked for: production
- * builds (Vercel, Xcode Cloud) read the hosted URL from it, so it cannot also
- * be the local-development default.
+ * `hostedOnly` (npm run dev:render) skips step 2.
  */
 
 export const LOCAL_BRAINFLOW_URL = 'http://127.0.0.1:8000';
 export const LOCAL_OVERRIDE_FILES = ['.env.development.local', '.env.local', '.env.development'];
 const VARIABLE = 'VITE_BRAINFLOW_SERVICE_URL';
+const HOSTED_SOURCE = '.env (configured hosted service)';
 
 function readVariable(file) {
   if (!existsSync(file)) return undefined;
@@ -46,22 +47,21 @@ export function normalizeServiceUrl(value, source) {
   return value.trim().replace(/\/+$/, '');
 }
 
-/** @returns {{ url: string, source: string, isLocalDefault: boolean }} */
-export function resolveDevServiceUrl({ cwd = process.cwd(), env = process.env, productionBackend = false } = {}) {
+/** @returns {{ url: string, source: string } | undefined} */
+export function resolveExplicitOverride({ cwd = process.cwd(), env = process.env } = {}) {
   const fromProcess = env[VARIABLE]?.trim();
-  if (fromProcess) {
-    return { url: normalizeServiceUrl(fromProcess, 'the environment'), source: 'the environment', isLocalDefault: false };
-  }
+  if (fromProcess) return { url: normalizeServiceUrl(fromProcess, 'the environment'), source: 'the environment' };
   for (const name of LOCAL_OVERRIDE_FILES) {
     const value = readVariable(resolve(cwd, name));
-    if (value) return { url: normalizeServiceUrl(value, name), source: name, isLocalDefault: false };
+    if (value) return { url: normalizeServiceUrl(value, name), source: name };
   }
-  if (productionBackend) {
-    const value = readVariable(resolve(cwd, '.env'));
-    if (!value) throw new Error(`--production-backend needs ${VARIABLE} in the tracked .env file.`);
-    return { url: normalizeServiceUrl(value, '.env (production default)'), source: '.env (production default)', isLocalDefault: false };
-  }
-  return { url: LOCAL_BRAINFLOW_URL, source: 'local default', isLocalDefault: true };
+  return undefined;
+}
+
+/** @returns {{ url: string, source: string } | undefined} */
+export function resolveConfiguredHosted({ cwd = process.cwd() } = {}) {
+  const value = readVariable(resolve(cwd, '.env'));
+  return value ? { url: normalizeServiceUrl(value, HOSTED_SOURCE), source: HOSTED_SOURCE } : undefined;
 }
 
 export async function isServiceHealthy(baseUrl, { timeoutMs = 3000, fetchHealth = fetch } = {}) {
@@ -82,7 +82,7 @@ export function standaloneServiceInstructions({ cwd = process.cwd() } = {}) {
     ? sibling
     : '<your brainflow-service checkout>';
   return [
-    'Start the standalone BrainFlow service in another terminal:',
+    'To use a local service, start the standalone brainflow-service in another terminal:',
     `  cd ${location}`,
     '  uv run uvicorn brainflow_service.app:app --host 127.0.0.1 --port 8000',
     '(first time: uv sync --extra test; see the brainflow-service README).',
@@ -90,39 +90,54 @@ export function standaloneServiceInstructions({ cwd = process.cwd() } = {}) {
 }
 
 /**
- * Resolves and health-checks the service. Throws a readable error when it is
- * unavailable; the caller decides whether to exit.
+ * Picks a healthy service in the order above. Throws a readable error when
+ * none is usable; the caller decides whether to exit.
+ *
+ * @returns {Promise<{ url: string, source: string, kind: 'override' | 'local' | 'hosted' }>}
  */
-export async function requireDevService({
-  cwd = process.cwd(), env = process.env, productionBackend = false, fetchHealth, hostedAlternative,
+export async function chooseDevService({
+  cwd = process.cwd(), env = process.env, hostedOnly = false, fetchHealth, log = console.log,
 } = {}) {
-  const resolved = resolveDevServiceUrl({ cwd, env, productionBackend });
-  // A hosted free-plan service that has spun down can take about a minute to wake.
-  const timeoutMs = resolved.isLocalDefault ? 3000 : 90_000;
-  if (!resolved.isLocalDefault) {
-    console.log(`Checking ${resolved.url} (a sleeping hosted service can take up to a minute to wake)...`);
+  const override = resolveExplicitOverride({ cwd, env });
+  if (override) {
+    if (await isServiceHealthy(override.url, { timeoutMs: 90_000, fetchHealth })) return { ...override, kind: 'override' };
+    throw new Error([
+      `No healthy BrainFlow service at ${override.url} (explicit override from ${override.source}).`,
+      `Check that service, or remove ${VARIABLE} from ${override.source} to use the local or hosted default.`,
+    ].join('\n'));
   }
-  if (await isServiceHealthy(resolved.url, { timeoutMs, fetchHealth })) return resolved;
 
-  const lines = [`No healthy BrainFlow service at ${resolved.url} (from ${resolved.source}).`];
-  if (resolved.isLocalDefault) {
-    lines.push(standaloneServiceInstructions({ cwd }));
-    if (hostedAlternative) lines.push(hostedAlternative);
-  } else {
-    lines.push(`Check that service, or unset ${VARIABLE} in ${resolved.source} to use a local one.`);
+  const problems = [];
+  if (!hostedOnly) {
+    if (await isServiceHealthy(LOCAL_BRAINFLOW_URL, { timeoutMs: 1500, fetchHealth })) {
+      return { url: LOCAL_BRAINFLOW_URL, source: 'local brainflow-service', kind: 'local' };
+    }
+    problems.push(`No healthy local BrainFlow service at ${LOCAL_BRAINFLOW_URL} (anything else on that port is left alone).`);
   }
-  throw new Error(lines.join('\n'));
+
+  const hosted = resolveConfiguredHosted({ cwd });
+  if (!hosted) {
+    problems.push(`No hosted service configured: ${VARIABLE} is missing from the tracked .env.`);
+  } else {
+    // A free-plan hosted service that has spun down can take about a minute to wake.
+    log(`Checking ${hosted.url} (a sleeping hosted service can take up to a minute to wake)...`);
+    if (await isServiceHealthy(hosted.url, { timeoutMs: 90_000, fetchHealth })) return { ...hosted, kind: 'hosted' };
+    problems.push(`No healthy hosted BrainFlow service at ${hosted.url} (from ${hosted.source}).`);
+  }
+
+  throw new Error([...problems, standaloneServiceInstructions({ cwd })].join('\n'));
 }
 
 // `npm run brainflow`: report which service local development would use and
-// how to start the standalone one. Exits non-zero when it is not healthy.
+// how to start the standalone one. Exits non-zero when none is usable.
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   console.log('The BrainFlow backend runs from the standalone brainflow-service repository,');
   console.log('not from this one. The embedded brainflow_service/ copy is kept only as a');
   console.log('rollback (npm run brainflow:embedded).\n');
   try {
-    const service = await requireDevService();
-    console.log(`Local development will use ${service.url} (from ${service.source}): healthy.`);
+    const service = await chooseDevService();
+    console.log(`npm run dev would use ${service.url} (${service.source}).`);
+    if (service.kind !== 'local') console.log(`\n${standaloneServiceInstructions()}`);
   } catch (error) {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;
