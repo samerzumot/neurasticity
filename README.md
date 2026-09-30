@@ -7,58 +7,86 @@ training calculations. The service never attempts to use Bluetooth itself.
 
 ## Local development
 
+Neurasticity's current Vite toolchain requires Node.js 20.19+ (or 22.12+).
 Install the web app dependencies:
-
-Neurasticity's current Vite toolchain requires Node.js 20.19+ (or 22.12+),
-plus Python 3.11+ with `uv`.
 
 ```bash
 npm install
 ```
 
-Then start the complete app (the BrainFlow analysis service and Vite frontend)
-with:
+The BrainFlow analysis backend is the standalone
+[`brainflow-service`](https://github.com/rosscolborne/brainflow-service)
+repository (Python 3.11+ with `uv`). Clone it next to this repository and start
+it in its own terminal:
+
+```bash
+cd ../brainflow-service
+uv sync --extra test        # first time only
+uv run uvicorn brainflow_service.app:app --host 127.0.0.1 --port 8000
+```
+
+Then start the frontend:
 
 ```bash
 npm run dev
 ```
 
-Vite prints the browser URL, normally `http://localhost:5173`. Press
-`Ctrl+C` once to stop both processes.
+`npm run dev` health-checks the BrainFlow service, prints which one it is
+using, and starts Vite (normally `http://localhost:5173`) pointed at it. It
+never starts, stops or restarts a backend, and it exits with instructions if
+the service is not healthy. `npm run brainflow` prints the same status and
+start instructions without starting anything. Press `Ctrl+C` to stop Vite.
 
-To run only one side for troubleshooting:
+Which service `npm run dev` uses, first match wins:
+
+1. `VITE_BRAINFLOW_SERVICE_URL` set in the shell;
+2. `VITE_BRAINFLOW_SERVICE_URL` in `.env.development.local`, `.env.local` or
+   `.env.development` (untracked local overrides);
+3. otherwise the local service at `http://127.0.0.1:8000`.
+
+To run the local frontend against the hosted Render service instead (no local
+backend needed; BrainFlow-direct hardware paths then do not work), use:
 
 ```bash
-npm run brainflow  # backend only
-npm run dev:web    # frontend only
+npm run dev:render
 ```
+
+The tracked `.env` holds the hosted Render URL that production builds use; the
+dev launchers deliberately ignore it unless `npm run dev:render` is used.
+`npm run dev:web` starts Vite alone with Vite's normal environment resolution,
+which picks up that hosted URL.
+
+The embedded `brainflow_service/` directory is an older copy of the backend,
+kept temporarily as a rollback. `npm run brainflow:embedded` still runs it on
+port 8000 if ever needed; do not develop against or change it.
 
 ## EEG acquisition console
 
 The development-only EEG Acquisition Console is a separate page for raw EEG
 acquisition, hardware-provider validation, recording, replay, live plots, and
-signal-quality debugging. It uses the same local BrainFlow service as
+signal-quality debugging. It uses the same BrainFlow service as
 Neurasticity, but does not form part of the patient or clinician UI.
+
+Start the standalone `brainflow-service` as above, then:
 
 ```bash
 npm run debug_console
 ```
 
-This opens the console at `http://127.0.0.1:5174/debug-console.html`. It
-uses a healthy local service on port 8000 when one is already running;
-otherwise it starts one. Stop it with `Ctrl+C`.
-
-Local development defaults to `http://127.0.0.1:8000`. To use another address
-or port, set `VITE_BRAINFLOW_SERVICE_URL` in `.env.local`. When that variable
-is set, `npm run dev` health-checks the configured service, prints its URL, and
-does not launch the local BrainFlow process. It exits instead of silently
-falling back when the configured service is unavailable.
+This opens the console at `http://127.0.0.1:5174/debug-console.html`. It uses
+the same service resolution as `npm run dev` (normally the local service) and
+exits with instructions if that service is not healthy. It has no hosted
+option: BrainFlow-direct Muse acquisition needs the service running on the
+same machine as the headset. Stop it with `Ctrl+C`.
 
 ## Vercel + Render deployment
 
-Deploy `render.yaml` as a Render web service. Then add
+The hosted backend is the Render service `neurasticity-brainflow`
+(`https://neurasticity-brainflow.onrender.com`), deployed from the
+`brainflow-service` repository (see its README; this repository's
+`render.yaml` is no longer used by that service). Add
 `VITE_BRAINFLOW_SERVICE_URL` to the Vercel project's environment variables,
-using the public HTTPS URL of that Render service, and redeploy the frontend.
+using that public HTTPS URL, and redeploy the frontend.
 The URL is included when Vite builds the app, so setting it without a new
 deployment does not update an already-published site.
 
@@ -71,16 +99,17 @@ browser-derived metrics are substituted.
 ```bash
 npm run build
 npm test                 # offline Vitest suite
-npm run test:python
+npm run test:python      # tests the embedded rollback copy only
 ```
+
+The backend's own tests run in the `brainflow-service` repository.
 
 `npm test` excludes the two service-backed Vitest files by name:
 `backendFitE2E.test.ts` and `eegPipelineIntegration.test.ts`. They remain in
-the dedicated BrainFlow integration suite. To run them, start the local service
-in one terminal and request the suite in another:
+the dedicated BrainFlow integration suite. To run them, start the standalone
+`brainflow-service` on port 8000 (see Local development) and run:
 
 ```bash
-npm run brainflow
 npm run test:brainflow:integration
 ```
 
@@ -95,6 +124,8 @@ Browser integration tests have their own service and environment requirements.
 
 ## BrainFlow service
 
-The FastAPI service source is in `brainflow_service/`; its endpoints and
-signal-processing behavior are documented in
-[brainflow_service/README.md](brainflow_service/README.md).
+The FastAPI service lives in the standalone
+[`brainflow-service`](https://github.com/rosscolborne/brainflow-service)
+repository, which documents its endpoints and signal processing. The
+`brainflow_service/` directory here is a temporary rollback copy and is not
+maintained.

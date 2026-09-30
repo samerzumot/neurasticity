@@ -23,6 +23,6 @@ export async function assertBrainflowHealthy(url, fetchHealth = fetch) {
     const health = await response.json();
     if (health.status !== 'ok') throw new Error(`unexpected health status: ${String(health.status)}`);
   } catch (error) {
-    throw new Error(`Local BrainFlow service unavailable at ${url}. Start it with npm run brainflow, then rerun npm run test:brainflow:integration. Cause: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Local BrainFlow service unavailable at ${url}. Start the standalone brainflow-service (npm run brainflow shows how), then rerun npm run test:brainflow:integration. Cause: ${error instanceof Error ? error.message : String(error)}`);
   }
 }

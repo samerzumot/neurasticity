@@ -2,8 +2,8 @@
 
 ## Current test entry points
 
-- `npm test` runs the default offline Vitest suite. With a local BrainFlow service started by `npm run brainflow`, `npm run test:brainflow:integration` runs the two service-backed Vitest files separately; see the [README checks](../../../../README.md#checks).
-- `npm run test:python` runs the pytest suite through `uv`.
+- `npm test` runs the default offline Vitest suite. With the standalone `brainflow-service` running on `127.0.0.1:8000` (`npm run brainflow` shows how), `npm run test:brainflow:integration` runs the two service-backed Vitest files separately; see the [README checks](../../../../README.md#checks).
+- `npm run test:python` runs the pytest suite of the embedded `brainflow_service/` rollback copy through `uv`; the maintained backend's tests run in the `brainflow-service` repository.
 - `npm run lint` and `npm run build` provide the repository's lint and TypeScript/build checks.
 - Playwright tests are in `e2e/`; configuration is in `playwright.config.ts`.
 

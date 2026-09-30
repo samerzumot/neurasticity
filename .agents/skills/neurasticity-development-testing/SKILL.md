@@ -11,8 +11,8 @@ Use this skill when changing or reviewing Neurasticity behavior. Its purpose is 
 
 | Layer | Use it for | Limit |
 | --- | --- | --- |
-| Python/pytest (`npm run test:python`) | BrainFlow service, backend API, and signal processing | Does not prove browser integration or physical acquisition. |
-| Vitest (`npm test`) | TypeScript domain, service, state, and component behavior | Default suite is offline; it excludes the two BrainFlow service backed tests. Start the local service with `npm run brainflow`, then run `npm run test:brainflow:integration` separately for those assertions. |
+| Python/pytest (`npm run test:python`) | The embedded `brainflow_service/` rollback copy only | The maintained backend and its tests live in the standalone `brainflow-service` repository; change and test the backend there. Does not prove browser integration or physical acquisition. |
+| Vitest (`npm test`) | TypeScript domain, service, state, and component behavior | Default suite is offline; it excludes the two BrainFlow service backed tests. Start the standalone `brainflow-service` on `127.0.0.1:8000` (`npm run brainflow` shows how), then run `npm run test:brainflow:integration` separately for those assertions. |
 | Static contract tests (Vitest) | Fast checks of source wiring and rules text where that contract is deliberate | Text checks do not prove runtime behavior or Firestore authorization. |
 | Local Firestore rules emulator (`npm run test:rules`) | Allowed and denied reads/writes under `firestore.rules` | Does not prove deployed rules or the complete UI workflow. |
 | Read-only Playwright projects | Authenticated navigation and observable UI behavior without a test-authored persistence change | Require provisioned identities and a running app; the app itself may back-fill signed-in profiles. |
